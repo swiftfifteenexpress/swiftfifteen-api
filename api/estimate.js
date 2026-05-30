@@ -35,22 +35,16 @@ export default async function handler(req, res) {
 
   try {
     // Call Kwikpik price estimate endpoint
-    const kwikpikRes = await fetch('https://api.kwikpik.io/v1/shipping/estimate', {
+    const kwikpikRes = await fetch('https://api.kwikpik.io/requests/estimate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.KWIKPIK_API_KEY,  // stored securely in Vercel env vars
+        'x-api-key': process.env.KWIKPIK_API_KEY,
       },
       body: JSON.stringify({
-        pickup: {
-          address: pickup_address,
-        },
-        dropoff: {
-          address: delivery_address,
-        },
-        package: {
-          weight: package_weight || 'small',  // default to small if not specified
-        }
+        pickup_address: pickup_address,
+        delivery_address: delivery_address,
+        package_weight: package_weight || 'small',
       })
     });
 
@@ -70,12 +64,22 @@ export default async function handler(req, res) {
     const data = await kwikpikRes.json();
 
     // Extract the base price from Kwikpik response
-    // Adjust the field name below if Kwikpik uses a different key
+    // Covers all common Kwikpik response shapes
     const kwikpikBasePrice = data?.data?.amount
+      || data?.data?.price
+      || data?.data?.estimated_price
+      || data?.data?.total
+      || data?.data?.fee
       || data?.amount
       || data?.price
+      || data?.estimated_price
+      || data?.total
+      || data?.fee
       || data?.estimated_cost
       || null;
+    
+    // Log full response in Vercel logs for debugging during testing
+    console.log('Kwikpik estimate response:', JSON.stringify(data));
 
     if (!kwikpikBasePrice) {
       console.error('Could not extract price from Kwikpik response:', data);
@@ -113,4 +117,4 @@ export default async function handler(req, res) {
       message: 'Price estimated based on zone.'
     });
   }
-}
+      }
