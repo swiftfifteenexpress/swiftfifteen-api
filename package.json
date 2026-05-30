@@ -1,0 +1,9 @@
+{
+  "name": "swiftfifteen-api",
+  "version": "1.0.0",
+  "description": "Swift-Fifteen Express — Kwikpik API proxy functions",
+  "private": true,
+  "engines": {
+    "node": "18.x"
+  }
+}

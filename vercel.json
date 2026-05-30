@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "functions": {
+    "api/estimate.js": {
+      "memory": 128,
+      "maxDuration": 10
+    },
+    "api/dispatch.js": {
+      "memory": 128,
+      "maxDuration": 15
+    }
+  }
+}
