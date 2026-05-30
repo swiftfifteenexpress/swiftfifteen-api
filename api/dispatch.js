@@ -48,35 +48,26 @@ export default async function handler(req, res) {
 
   try {
     // Book delivery on Kwikpik
-    const kwikpikRes = await fetch('https://api.kwikpik.io/v1/shipping/create', {
+    const kwikpikRes = await fetch('https://api.kwikpik.io/requests/initiate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': process.env.KWIKPIK_API_KEY,
       },
       body: JSON.stringify({
-        pickup: {
-          address: pickup_address,
-          city: pickup_city || 'Lagos',
-          contact_name: sender_name,
-          contact_phone: sender_phone,
-          scheduled_time: `${pickup_date} ${pickup_time || '10:00'}`,
-          note: `Swift-Fifteen Express order ${order_id}`
-        },
-        dropoff: {
-          address: delivery_address,
-          contact_name: recipient_name,
-          contact_phone: recipient_phone,
-          note: package_description + (special_handling ? ` | Handling: ${special_handling}` : '')
-        },
-        package: {
-          description: package_description,
-          weight: package_weight || 'small',
-        },
-        metadata: {
-          swift_order_id: order_id,
-          platform: 'swiftfifteenexpress.com'
-        }
+        pickup_address: pickup_address,
+        pickup_city: pickup_city || 'Lagos',
+        pickup_contact_name: sender_name,
+        pickup_contact_phone: sender_phone,
+        pickup_date: pickup_date,
+        pickup_time: pickup_time || '10:00',
+        delivery_address: delivery_address,
+        delivery_contact_name: recipient_name,
+        delivery_contact_phone: recipient_phone,
+        package_description: package_description,
+        package_weight: package_weight || 'small',
+        special_handling: special_handling || '',
+        note: `Swift-Fifteen Express | Order ${order_id}`,
       })
     });
 
@@ -92,13 +83,32 @@ export default async function handler(req, res) {
       });
     }
 
-    // Extract tracking info from Kwikpik response
-    // Adjust field names below if Kwikpik uses different keys
-    const trackingId    = data?.data?.tracking_id   || data?.tracking_id   || null;
-    const trackingUrl   = data?.data?.tracking_url  || data?.tracking_url  || null;
-    const kwikpikOrderId = data?.data?.order_id     || data?.order_id      || null;
-    const riderName     = data?.data?.rider?.name   || null;
-    const riderPhone    = data?.data?.rider?.phone  || null;
+    // Log full response for debugging during testing
+    console.log('Kwikpik dispatch response:', JSON.stringify(data));
+
+    // Extract tracking info — covers all common Kwikpik response shapes
+    const trackingId     = data?.data?.tracking_id
+      || data?.data?.trackingId
+      || data?.tracking_id
+      || data?.trackingId
+      || null;
+
+    const trackingUrl    = data?.data?.tracking_url
+      || data?.data?.trackingUrl
+      || data?.data?.tracker_url
+      || data?.tracking_url
+      || data?.trackingUrl
+      || null;
+
+    const kwikpikOrderId = data?.data?.order_id
+      || data?.data?.id
+      || data?.data?.request_id
+      || data?.order_id
+      || data?.id
+      || null;
+
+    const riderName  = data?.data?.rider?.name  || data?.data?.courier?.name  || null;
+    const riderPhone = data?.data?.rider?.phone || data?.data?.courier?.phone || null;
 
     return res.status(200).json({
       success: true,
@@ -119,4 +129,4 @@ export default async function handler(req, res) {
       error: err.message
     });
   }
-}
+          }
