@@ -4,6 +4,6 @@
   "description": "Swift-Fifteen Express Kwikpik API proxy",
   "private": true,
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   }
 }
