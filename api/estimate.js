@@ -46,7 +46,7 @@ export default async function handler(req, res) {
     const payload = {
       insured:     false,
       itemValue:   0,
-      vehicleType: 'bike',
+      vehicleType: 'motorcycle',
       pickupLocation: {
         latitude:  pickupCoords.latitude,
         longitude: pickupCoords.longitude,
@@ -134,4 +134,4 @@ export default async function handler(req, res) {
       message: 'Fallback price used — see error field'
     });
   }
-                                 }
+                                }
