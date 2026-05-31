@@ -80,7 +80,7 @@ export default async function handler(req, res) {
 
     // Step 2 — Build exact Kwikpik initiate payload from API docs
     const payload = {
-      vehicleType: 'bike',
+      vehicleType: 'motorcycle',
       pickupLocation: {
         latitude:  pickupCoords.latitude,
         longitude: pickupCoords.longitude,
@@ -167,4 +167,4 @@ export default async function handler(req, res) {
       error: err.message
     });
   }
-      }
+    }
