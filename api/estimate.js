@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     // Try both possible base URLs — sandbox vs live
     const BASE_URL = 'https://api.kwikpik.io';
 
-    const kwikpikRes = await fetch(`${BASE_URL}/requests/estimate`, {
+    const kwikpikRes = await fetch(`${BASE_URL}/partners/requests/estimate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -134,4 +134,4 @@ export default async function handler(req, res) {
       message: 'Fallback price used — see error field'
     });
   }
-}
+                                 }
