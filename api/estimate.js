@@ -3,26 +3,16 @@
 // Route: POST /api/estimate
 // ============================================================
 
-// Geocode using Google Maps API — accurate for Nigerian addresses
 async function geocode(address) {
   const query = encodeURIComponent(address + ', Nigeria');
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GOOGLE_MAPS_API_KEY}&region=ng&components=country:NG`;
-  
   const res  = await fetch(url);
   const data = await res.json();
-
-  console.log(`Geocode "${address}" status:`, data.status);
-
   if (data.status !== 'OK' || !data.results || data.results.length === 0) {
     throw new Error(`Google could not geocode: "${address}" — status: ${data.status}`);
   }
-
   const loc = data.results[0].geometry.location;
-  return {
-    latitude:  loc.lat,
-    longitude: loc.lng,
-    address:   address
-  };
+  return { latitude: loc.lat, longitude: loc.lng, address: address };
 }
 
 export default async function handler(req, res) {
@@ -36,40 +26,23 @@ export default async function handler(req, res) {
 
   const { pickup_address, delivery_address, package_weight } = req.body;
 
-  if (!pickup_address || !delivery_address) {
-    return res.status(400).json({ error: 'Pickup and delivery addresses are required' });
-  }
-
-  // ── YOUR MARGIN SETTINGS ─────────────────────────────────
-  const MARGIN_FLAT    = 800;   // flat ₦800 added to every order
-  const MINIMUM_CHARGE = 3000;  // never charge less than ₦3,000
-  // ─────────────────────────────────────────────────────────
+  const MARGIN_FLAT    = 800;
+  const MINIMUM_CHARGE = 3000;
 
   if (!process.env.KWIKPIK_API_KEY) {
-    return res.status(200).json({
-      success: true, your_price: MINIMUM_CHARGE,
-      fallback: true, message: 'Kwikpik API key not configured'
-    });
+    return res.status(200).json({ success: true, your_price: MINIMUM_CHARGE, fallback: true, message: 'Kwikpik API key not configured' });
   }
-
   if (!process.env.GOOGLE_MAPS_API_KEY) {
-    return res.status(200).json({
-      success: true, your_price: MINIMUM_CHARGE,
-      fallback: true, message: 'Google Maps API key not configured'
-    });
+    return res.status(200).json({ success: true, your_price: MINIMUM_CHARGE, fallback: true, message: 'Google Maps API key not configured' });
   }
 
   try {
-    // Step 1 — Geocode both addresses with Google
-    console.log('Geocoding with Google Maps...');
+    // Geocode both addresses
     const [pickupCoords, deliveryCoords] = await Promise.all([
       geocode(pickup_address),
       geocode(delivery_address)
     ]);
-    console.log('Pickup:', pickupCoords);
-    console.log('Delivery:', deliveryCoords);
 
-    // Step 2 — Call Kwikpik estimate with correct payload structure
     const payload = {
       insured:     false,
       itemValue:   0,
@@ -86,9 +59,10 @@ export default async function handler(req, res) {
       }
     };
 
-    console.log('Calling Kwikpik /requests/estimate...');
+    // Try both possible base URLs — sandbox vs live
+    const BASE_URL = 'https://api.kwikpik.io';
 
-    const kwikpikRes = await fetch('https://api.kwikpik.io/requests/estimate', {
+    const kwikpikRes = await fetch(`${BASE_URL}/requests/estimate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -99,56 +73,65 @@ export default async function handler(req, res) {
     });
 
     const rawText = await kwikpikRes.text();
-    console.log('Kwikpik status:', kwikpikRes.status);
-    console.log('Kwikpik response:', rawText);
 
-    let data;
+    // ── FULL DEBUG — shows everything ──────────────────────
+    // Check if it's valid JSON first
+    let parsedData = null;
+    let isJson = false;
     try {
-      data = JSON.parse(rawText);
+      parsedData = JSON.parse(rawText);
+      isJson = true;
     } catch(e) {
-      console.error('Non-JSON response from Kwikpik:', rawText);
+      isJson = false;
+    }
+
+    // If still non-JSON — return full debug info so we can diagnose
+    if (!isJson) {
       return res.status(200).json({
-        success: true, your_price: MINIMUM_CHARGE,
-        fallback: true, message: 'Non-JSON response from Kwikpik'
+        success: false,
+        debug: true,
+        kwikpik_http_status: kwikpikRes.status,
+        kwikpik_http_status_text: kwikpikRes.statusText,
+        kwikpik_raw_response: rawText.substring(0, 500), // first 500 chars
+        api_key_preview: process.env.KWIKPIK_API_KEY.substring(0, 8) + '...',
+        geocode_results: { pickup: pickupCoords, delivery: deliveryCoords },
+        payload_sent: payload,
+        message: 'Kwikpik returned non-JSON — see kwikpik_raw_response for details'
       });
     }
 
-    // Extract price from result.total (per Kwikpik docs)
-    const basePrice = data?.result?.total
-      || data?.result?.deliveryFee
-      || data?.total
-      || data?.deliveryFee
+    // If JSON — extract price
+    const basePrice = parsedData?.result?.total
+      || parsedData?.result?.deliveryFee
+      || parsedData?.total
+      || parsedData?.deliveryFee
       || null;
 
     if (!basePrice) {
-      console.error('Price not found in Kwikpik response:', JSON.stringify(data));
       return res.status(200).json({
         success: true, your_price: MINIMUM_CHARGE,
-        fallback: true, debug_response: data,
-        message: 'Price field not found in Kwikpik response'
+        fallback: true, full_kwikpik_response: parsedData,
+        message: 'Got JSON but price field not found — see full_kwikpik_response'
       });
     }
 
     const baseNum    = parseFloat(basePrice);
     const finalPrice = Math.max(Math.ceil((baseNum + MARGIN_FLAT) / 100) * 100, MINIMUM_CHARGE);
 
-    console.log(`Kwikpik base: ₦${baseNum} | Your price: ₦${finalPrice}`);
-
     return res.status(200).json({
-      success:      true,
+      success:       true,
       kwikpik_price: baseNum,
-      your_price:   finalPrice,
-      duration:     data?.result?.duration || null,
-      fallback:     false,
-      currency:     'NGN'
+      your_price:    finalPrice,
+      duration:      parsedData?.result?.duration || null,
+      fallback:      false,
+      currency:      'NGN'
     });
 
   } catch (err) {
-    console.error('Estimate error:', err.message);
     return res.status(200).json({
       success: true, your_price: MINIMUM_CHARGE,
       fallback: true, error: err.message,
-      message: 'Fallback price used'
+      message: 'Fallback price used — see error field'
     });
   }
 }
