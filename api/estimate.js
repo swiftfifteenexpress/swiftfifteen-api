@@ -9,7 +9,7 @@ async function geocode(address) {
   const res  = await fetch(url);
   const data = await res.json();
   if (data.status !== 'OK' || !data.results || data.results.length === 0) {
-    throw new Error(`Google could not geocode: "${address}" — status: ${data.status}`);
+    throw new Error(`Could not geocode: "${address}" — ${data.status}`);
   }
   const loc = data.results[0].geometry.location;
   return { latitude: loc.lat, longitude: loc.lng, address: address };
@@ -24,94 +24,76 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
 
-  const { pickup_address, delivery_address, package_weight } = req.body;
+  const { pickup_address, delivery_address } = req.body;
 
-  const MARGIN_FLAT    = 800;
-  const MINIMUM_CHARGE = 3000;
-
-  if (!process.env.KWIKPIK_API_KEY) {
-    return res.status(200).json({ success: true, your_price: MINIMUM_CHARGE, fallback: true, message: 'Kwikpik API key not configured' });
+  if (!pickup_address || !delivery_address) {
+    return res.status(400).json({ error: 'Pickup and delivery addresses are required' });
   }
-  if (!process.env.GOOGLE_MAPS_API_KEY) {
-    return res.status(200).json({ success: true, your_price: MINIMUM_CHARGE, fallback: true, message: 'Google Maps API key not configured' });
+
+  // ── YOUR MARGIN SETTINGS — adjust anytime ────────────────
+  const MARGIN_FLAT    = 800;   // flat ₦800 added to every order
+  const MINIMUM_CHARGE = 3000;  // never charge less than ₦3,000
+  // ─────────────────────────────────────────────────────────
+
+  if (!process.env.KWIKPIK_API_KEY || !process.env.GOOGLE_MAPS_API_KEY) {
+    return res.status(200).json({
+      success: true, your_price: MINIMUM_CHARGE,
+      fallback: true, message: 'API keys not configured'
+    });
   }
 
   try {
-    // Geocode both addresses
+    // Step 1 — Geocode both addresses with Google Maps
     const [pickupCoords, deliveryCoords] = await Promise.all([
       geocode(pickup_address),
       geocode(delivery_address)
     ]);
 
-    const payload = {
-      insured:     false,
-      itemValue:   0,
-      vehicleType: 'motorcycle',
-      pickupLocation: {
-        latitude:  pickupCoords.latitude,
-        longitude: pickupCoords.longitude,
-        address:   pickup_address
-      },
-      deliveryLocation: {
-        latitude:  deliveryCoords.latitude,
-        longitude: deliveryCoords.longitude,
-        address:   delivery_address
-      }
-    };
-
-    // Try both possible base URLs — sandbox vs live
-    const BASE_URL = 'https://api.kwikpik.io';
-
-    const kwikpikRes = await fetch(`${BASE_URL}/partners/requests/estimate`, {
+    // Step 2 — Call Kwikpik estimate
+    const kwikpikRes = await fetch('https://api.kwikpik.io/partners/requests/estimate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key':    process.env.KWIKPIK_API_KEY,
         'Accept':       'application/json',
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        insured:     false,
+        itemValue:   0,
+        vehicleType: 'motorcycle',
+        pickupLocation: {
+          latitude:  pickupCoords.latitude,
+          longitude: pickupCoords.longitude,
+          address:   pickup_address
+        },
+        deliveryLocation: {
+          latitude:  deliveryCoords.latitude,
+          longitude: deliveryCoords.longitude,
+          address:   delivery_address
+        }
+      })
     });
 
     const rawText = await kwikpikRes.text();
-
-    // ── FULL DEBUG — shows everything ──────────────────────
-    // Check if it's valid JSON first
-    let parsedData = null;
-    let isJson = false;
-    try {
-      parsedData = JSON.parse(rawText);
-      isJson = true;
-    } catch(e) {
-      isJson = false;
-    }
-
-    // If still non-JSON — return full debug info so we can diagnose
-    if (!isJson) {
+    let data;
+    try { data = JSON.parse(rawText); }
+    catch(e) {
       return res.status(200).json({
-        success: false,
-        debug: true,
-        kwikpik_http_status: kwikpikRes.status,
-        kwikpik_http_status_text: kwikpikRes.statusText,
-        kwikpik_raw_response: rawText.substring(0, 500), // first 500 chars
-        api_key_preview: process.env.KWIKPIK_API_KEY.substring(0, 8) + '...',
-        geocode_results: { pickup: pickupCoords, delivery: deliveryCoords },
-        payload_sent: payload,
-        message: 'Kwikpik returned non-JSON — see kwikpik_raw_response for details'
+        success: true, your_price: MINIMUM_CHARGE,
+        fallback: true, message: 'Could not parse Kwikpik response'
       });
     }
 
-    // If JSON — extract price
-    const basePrice = parsedData?.result?.total
-      || parsedData?.result?.deliveryFee
-      || parsedData?.total
-      || parsedData?.deliveryFee
+    // Step 3 — Extract price from result.total
+    const basePrice = data?.result?.total
+      || data?.result?.deliveryFee
+      || data?.total
       || null;
 
     if (!basePrice) {
       return res.status(200).json({
         success: true, your_price: MINIMUM_CHARGE,
-        fallback: true, full_kwikpik_response: parsedData,
-        message: 'Got JSON but price field not found — see full_kwikpik_response'
+        fallback: true, message: 'Price not found in Kwikpik response'
       });
     }
 
@@ -122,16 +104,16 @@ export default async function handler(req, res) {
       success:       true,
       kwikpik_price: baseNum,
       your_price:    finalPrice,
-      duration:      parsedData?.result?.duration || null,
+      duration:      data?.result?.duration || null,
       fallback:      false,
       currency:      'NGN'
     });
 
   } catch (err) {
+    console.error('Estimate error:', err.message);
     return res.status(200).json({
       success: true, your_price: MINIMUM_CHARGE,
-      fallback: true, error: err.message,
-      message: 'Fallback price used — see error field'
+      fallback: true, message: 'Fallback price used'
     });
   }
-                                }
+}
