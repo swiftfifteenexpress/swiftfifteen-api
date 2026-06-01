@@ -1,6 +1,5 @@
 // ============================================================
-// Swift-Fifteen Express — Paystack Payment Verification
-// + Kwikpik Auto-Dispatch after confirmed payment
+// Swift-Fifteen Express — Paystack Verify + Kwikpik Dispatch
 // Route: POST /api/verify-payment
 // ============================================================
 
@@ -9,8 +8,9 @@ async function geocode(address) {
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GOOGLE_MAPS_API_KEY}&region=ng&components=country:NG`;
   const res  = await fetch(url);
   const data = await res.json();
+  console.log(`Geocode "${address}" → status: ${data.status}`);
   if (data.status !== 'OK' || !data.results?.length) {
-    throw new Error(`Could not geocode: "${address}"`);
+    throw new Error(`Geocoding failed for "${address}" — Google status: ${data.status}`);
   }
   const loc = data.results[0].geometry.location;
   return { latitude: loc.lat, longitude: loc.lng, address: address };
@@ -18,9 +18,9 @@ async function geocode(address) {
 
 function weightToKg(w) {
   if (!w) return 1;
-  if (w.includes('20kg+'))  return 25;
-  if (w.includes('5–20'))   return 10;
-  if (w.includes('1–5'))    return 3;
+  if (w.includes('20kg+')) return 25;
+  if (w.includes('5–20'))  return 10;
+  if (w.includes('1–5'))   return 3;
   return 1;
 }
 
@@ -35,20 +35,32 @@ export default async function handler(req, res) {
 
   const { reference, order_data } = req.body;
 
+  console.log('=== verify-payment called ===');
+  console.log('Reference:', reference);
+  console.log('Order data keys:', order_data ? Object.keys(order_data).join(', ') : 'MISSING');
+
   if (!reference) {
     return res.status(400).json({ success: false, error: 'Payment reference is required' });
   }
 
   if (!process.env.PAYSTACK_SECRET_KEY) {
+    console.error('PAYSTACK_SECRET_KEY missing');
     return res.status(500).json({ success: false, error: 'Paystack secret key not configured' });
   }
 
-  try {
-    // ── Step 1: Verify payment with Paystack ──────────────
-    console.log('Verifying Paystack payment:', reference);
+  if (!process.env.KWIKPIK_API_KEY) {
+    console.error('KWIKPIK_API_KEY missing');
+  }
 
+  if (!process.env.GOOGLE_MAPS_API_KEY) {
+    console.error('GOOGLE_MAPS_API_KEY missing');
+  }
+
+  try {
+    // ── Step 1: Verify with Paystack ─────────────────────
+    console.log('Calling Paystack verify...');
     const paystackRes = await fetch(
-      `https://api.paystack.co/transaction/verify/${reference}`,
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
       {
         method: 'GET',
         headers: {
@@ -59,10 +71,11 @@ export default async function handler(req, res) {
     );
 
     const paystackData = await paystackRes.json();
-    console.log('Paystack verify response:', JSON.stringify(paystackData));
+    console.log('Paystack status:', paystackData?.data?.status);
+    console.log('Paystack amount (kobo):', paystackData?.data?.amount);
 
-    // Check payment status
     if (!paystackData.status || paystackData.data?.status !== 'success') {
+      console.error('Payment not confirmed:', paystackData?.data?.status);
       return res.status(200).json({
         success: false,
         payment_verified: false,
@@ -71,30 +84,24 @@ export default async function handler(req, res) {
       });
     }
 
-    // Verify amount matches (Paystack returns amount in kobo)
-    const paidAmountKobo    = paystackData.data.amount;
-    const expectedAmountNGN = order_data?.amount_ngn || 0;
-    const expectedKobo      = expectedAmountNGN * 100;
+    const paidAmountKobo = paystackData.data.amount;
+    console.log(`Payment verified ✓ — ₦${paidAmountKobo / 100}`);
 
-    // Allow ±100 kobo tolerance for rounding
-    if (Math.abs(paidAmountKobo - expectedKobo) > 100) {
-      console.warn(`Amount mismatch: paid ${paidAmountKobo} kobo, expected ${expectedKobo} kobo`);
-      // Still proceed — log the mismatch but don't block the order
-    }
-
-    console.log(`Payment verified ✓ — ₦${paidAmountKobo / 100} paid by ${paystackData.data.customer?.email}`);
-
-    // ── Step 2: Dispatch to Kwikpik ───────────────────────
-    if (!order_data) {
+    // ── Step 2: Dispatch to Kwikpik ──────────────────────
+    if (!order_data || !order_data.pickup_address || !order_data.delivery_address) {
+      console.error('Missing order_data or addresses');
       return res.status(200).json({
         success: true,
         payment_verified: true,
-        dispatch_status: 'skipped',
-        message: 'Payment verified but no order data provided'
+        dispatch_status: 'failed',
+        message: 'Payment verified but order data was missing or incomplete'
       });
     }
 
-    console.log('Geocoding addresses for dispatch...');
+    // Geocode both addresses
+    console.log('Geocoding pickup:', order_data.pickup_address);
+    console.log('Geocoding delivery:', order_data.delivery_address);
+
     const pickupFull = order_data.pickup_address
       + (order_data.pickup_city ? ', ' + order_data.pickup_city : ', Lagos');
 
@@ -103,6 +110,10 @@ export default async function handler(req, res) {
       geocode(order_data.delivery_address)
     ]);
 
+    console.log('Pickup coords:', JSON.stringify(pickupCoords));
+    console.log('Delivery coords:', JSON.stringify(deliveryCoords));
+
+    // Build Kwikpik payload
     const kwikpikPayload = {
       vehicleType: 'motorcycle',
       pickupLocation: {
@@ -115,11 +126,11 @@ export default async function handler(req, res) {
         longitude: deliveryCoords.longitude,
         address:   order_data.delivery_address
       },
-      senderName:           order_data.sender_name,
+      senderName:           order_data.sender_name || 'Swift-Fifteen Customer',
       senderEmail:          order_data.sender_email || 'orders@swiftfifteenexpress.com',
       senderPhoneNumber:    order_data.sender_phone,
-      recipientName:        order_data.recipient_name,
-      recipientPhoneNumber: order_data.recipient_phone,
+      recipientName:        order_data.recipient_name || order_data.sender_name,
+      recipientPhoneNumber: order_data.recipient_phone || order_data.sender_phone,
       description:          order_data.package_description || 'Package delivery',
       itemCategory:         'general',
       itemValue:            parseFloat(order_data.declared_value) || 0,
@@ -129,7 +140,8 @@ export default async function handler(req, res) {
       itemQuantity:         1
     };
 
-    console.log('Dispatching to Kwikpik...');
+    console.log('Sending to Kwikpik /partners/requests/initiate...');
+    console.log('Payload:', JSON.stringify(kwikpikPayload));
 
     const kwikpikRes = await fetch('https://api.kwikpik.io/partners/requests/initiate', {
       method: 'POST',
@@ -141,38 +153,43 @@ export default async function handler(req, res) {
       body: JSON.stringify(kwikpikPayload)
     });
 
-    const kwikpikRaw  = await kwikpikRes.text();
-    console.log('Kwikpik dispatch status:', kwikpikRes.status);
-    console.log('Kwikpik dispatch response:', kwikpikRaw);
+    const kwikpikRaw = await kwikpikRes.text();
+    console.log('Kwikpik HTTP status:', kwikpikRes.status);
+    console.log('Kwikpik raw response:', kwikpikRaw);
 
     let kwikpikData;
-    try { kwikpikData = JSON.parse(kwikpikRaw); }
-    catch(e) {
+    try {
+      kwikpikData = JSON.parse(kwikpikRaw);
+    } catch(e) {
+      console.error('Kwikpik returned non-JSON:', kwikpikRaw);
       return res.status(200).json({
-        success:           true,
-        payment_verified:  true,
-        dispatch_status:   'failed',
-        dispatch_error:    kwikpikRaw,
-        message:           'Payment verified ✓ but Kwikpik dispatch failed — dispatch manually'
+        success: true,
+        payment_verified: true,
+        paid_amount_ngn: paidAmountKobo / 100,
+        dispatch_status: 'failed',
+        dispatch_error: kwikpikRaw,
+        message: 'Payment verified ✓ but Kwikpik returned non-JSON response'
       });
     }
 
     if (!kwikpikRes.ok) {
+      console.error('Kwikpik dispatch failed:', JSON.stringify(kwikpikData));
       return res.status(200).json({
-        success:           true,
-        payment_verified:  true,
-        dispatch_status:   'failed',
-        dispatch_error:    kwikpikData,
-        message:           'Payment verified ✓ but Kwikpik dispatch failed — dispatch manually'
+        success: true,
+        payment_verified: true,
+        paid_amount_ngn: paidAmountKobo / 100,
+        dispatch_status: 'failed',
+        dispatch_error: kwikpikData,
+        kwikpik_http_status: kwikpikRes.status,
+        message: 'Payment verified ✓ but Kwikpik dispatch failed'
       });
     }
 
-    const kwikpikId   = kwikpikData?.result?.id || kwikpikData?.id || null;
-    const trackingUrl = kwikpikId
-      ? `https://kwikpik.io/track/${kwikpikId}`
-      : null;
+    const kwikpikId  = kwikpikData?.result?.id  || kwikpikData?.id  || null;
+    const kwikStatus = kwikpikData?.result?.status || kwikpikData?.status || null;
+    const trackingUrl = kwikpikId ? `https://kwikpik.io/track/${kwikpikId}` : null;
 
-    console.log('Dispatch successful. Kwikpik ID:', kwikpikId);
+    console.log('Kwikpik dispatch result — ID:', kwikpikId, 'Status:', kwikStatus);
 
     return res.status(200).json({
       success:           true,
@@ -180,17 +197,20 @@ export default async function handler(req, res) {
       paid_amount_ngn:   paidAmountKobo / 100,
       dispatch_status:   'success',
       kwikpik_id:        kwikpikId,
+      kwikpik_status:    kwikStatus,
       tracking_url:      trackingUrl,
-      message:           'Payment verified and rider dispatched successfully'
+      message:           'Payment verified and delivery request created'
     });
 
   } catch (err) {
     console.error('verify-payment error:', err.message);
+    console.error('Stack:', err.stack);
     return res.status(200).json({
-      success:          false,
+      success: false,
       payment_verified: false,
-      error:            err.message,
-      message:          'Verification error — check Vercel logs'
+      dispatch_status: 'error',
+      error: err.message,
+      message: 'Server error during verification — check Vercel logs'
     });
   }
 }
