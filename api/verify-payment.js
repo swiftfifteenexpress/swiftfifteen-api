@@ -143,7 +143,7 @@ export default async function handler(req, res) {
     console.log('Sending to Kwikpik /partners/requests/initiate...');
     console.log('Payload:', JSON.stringify(kwikpikPayload));
 
-    const kwikpikRes = await fetch('https://api.kwikpik.io/partners/requests/initiate', {
+    const kwikpikRes = await fetch('https://api.kwikpik.io/requests/initiate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
