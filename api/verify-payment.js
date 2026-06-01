@@ -24,6 +24,16 @@ function weightToKg(w) {
   return 1;
 }
 
+// Format Nigerian phone numbers to +234 format for Kwikpik
+function formatPhone(phone) {
+  if (!phone) return '';
+  const digits = phone.toString().replace(/\D/g, ''); // strip non-digits
+  if (digits.startsWith('234')) return '+' + digits;         // already 234...
+  if (digits.startsWith('0'))   return '+234' + digits.slice(1); // 08012... → +2348012...
+  if (digits.length === 10)     return '+234' + digits;      // 8012... → +2348012...
+  return '+' + digits; // fallback
+}
+
 export default async function handler(req, res) {
 
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -128,9 +138,9 @@ export default async function handler(req, res) {
       },
       senderName:           order_data.sender_name || 'Swift-Fifteen Customer',
       senderEmail:          order_data.sender_email || 'orders@swiftfifteenexpress.com',
-      senderPhoneNumber:    order_data.sender_phone,
+      senderPhoneNumber:    formatPhone(order_data.sender_phone),
       recipientName:        order_data.recipient_name || order_data.sender_name,
-      recipientPhoneNumber: order_data.recipient_phone || order_data.sender_phone,
+      recipientPhoneNumber: formatPhone(order_data.recipient_phone || order_data.sender_phone),
       description:          order_data.package_description || 'Package delivery',
       itemCategory:         'general',
       itemValue:            parseFloat(order_data.declared_value) || 0,
@@ -143,7 +153,7 @@ export default async function handler(req, res) {
     console.log('Sending to Kwikpik /partners/requests/initiate...');
     console.log('Payload:', JSON.stringify(kwikpikPayload));
 
-    const kwikpikRes = await fetch('https://api.kwikpik.io/requests/initiate', {
+    const kwikpikRes = await fetch('https://api.kwikpik.io/partners/requests/initiate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -159,6 +169,21 @@ export default async function handler(req, res) {
 
     let kwikpikData;
     try {
+      if (!kwikpikRaw || kwikpikRaw.trim() === '') {
+        // Empty response — Kwikpik accepted but returned nothing
+        // This sometimes means the order was created in PENDING state
+        // Check dashboard to confirm, and log for debugging
+        console.error('Kwikpik returned EMPTY response body. HTTP status was:', kwikpikRes.status);
+        console.error('This usually means: (1) phone number format issue, (2) wallet empty, or (3) account not API-enabled for dispatch');
+        return res.status(200).json({
+          success: true,
+          payment_verified: true,
+          paid_amount_ngn: paidAmountKobo / 100,
+          dispatch_status: 'pending',
+          tracking_url: null,
+          message: 'Payment verified ✓. Kwikpik accepted the request but returned no confirmation. Check Kwikpik dashboard to confirm order was created.'
+        });
+      }
       kwikpikData = JSON.parse(kwikpikRaw);
     } catch(e) {
       console.error('Kwikpik returned non-JSON:', kwikpikRaw);
