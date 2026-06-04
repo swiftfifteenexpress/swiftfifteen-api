@@ -4,6 +4,9 @@
 // Flow: verify payment → validate addresses → fetch rates → dispatch
 // ============================================================
 
+/**
+ * Utility: Format phone number to Shipbubble's preferred international format (+234...)
+ */
 function formatPhone(phone) {
   if (!phone) return '+2348000000000';
   const digits = phone.toString().replace(/\D/g, '');
@@ -13,14 +16,21 @@ function formatPhone(phone) {
   return '+' + digits;
 }
 
+/**
+ * Utility: Map user weight selection to numeric KG values
+ */
 function weightToKg(w) {
   if (!w) return 1;
-  if (w.includes('20kg+')) return 20;
-  if (w.includes('5–20'))  return 8;
-  if (w.includes('1–5'))   return 3;
+  const weightStr = w.toString().toLowerCase();
+  if (weightStr.includes('20kg+')) return 25;
+  if (weightStr.includes('5–20'))  return 12;
+  if (weightStr.includes('1–5'))   return 3;
   return 0.5;
 }
 
+/**
+ * Step 2 Utility: Validate an address and get its unique address_code
+ */
 async function validateAddress(address, name, phone, email, apiKey) {
   const payload = {
     name:    name,
@@ -29,9 +39,9 @@ async function validateAddress(address, name, phone, email, apiKey) {
     address: address + (address.toLowerCase().includes('nigeria') ? '' : ', Lagos, Nigeria')
   };
 
-  console.log(`Validating: "${address}"`);
+  console.log(`Validating Address: "${payload.address}"`);
 
-  const res  = await fetch('https://api.shipbubble.com/v1/shipping/address/validate', {
+  const res = await fetch('https://api.shipbubble.com/v1/shipping/address/validate', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -41,31 +51,27 @@ async function validateAddress(address, name, phone, email, apiKey) {
     body: JSON.stringify(payload)
   });
 
-  const raw  = await res.text();
-  console.log(`Validate status: ${res.status}, response: ${raw}`);
-
-  const data = JSON.parse(raw);
+  const data = await res.json();
+  
   if (data.status !== 'success' || !data.data?.address_code) {
-    throw new Error(`Address validation failed: "${address}" — ${data.message}`);
+    throw new Error(`Address validation failed for "${address}": ${data.message || 'Unknown error'}`);
   }
+  
   return data.data.address_code;
 }
 
 export default async function handler(req, res) {
-
+  // --- CORS Headers ---
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { reference, order_data } = req.body;
 
-  console.log('=== verify-payment called ===');
-  console.log('Reference:', reference);
-  console.log('Has order_data:', !!order_data);
-
+  console.log('=== verify-payment execution started ===');
   if (!reference) {
     return res.status(400).json({ success: false, error: 'Payment reference is required' });
   }
@@ -73,174 +79,153 @@ export default async function handler(req, res) {
   const SHIPBUBBLE_KEY = process.env.SHIPBUBBLE_API_KEY;
   const PAYSTACK_KEY   = process.env.PAYSTACK_SECRET_KEY;
 
-  if (!PAYSTACK_KEY) {
-    return res.status(500).json({ success: false, error: 'Paystack secret key not configured' });
-  }
-
   try {
     // ── Step 1: Verify Paystack payment ──────────────────
-    console.log('Verifying Paystack...');
-    const psRes  = await fetch(
+    console.log('Verifying Paystack Transaction...');
+    const psRes = await fetch(
       `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
       { headers: { 'Authorization': `Bearer ${PAYSTACK_KEY}` } }
     );
     const psData = await psRes.json();
-    console.log('Paystack status:', psData?.data?.status, '— Amount:', psData?.data?.amount);
 
     if (!psData.status || psData.data?.status !== 'success') {
       return res.status(200).json({
-        success: false, payment_verified: false,
-        paystack_status: psData.data?.status || 'unknown',
-        message: 'Payment not confirmed by Paystack'
+        success: false, 
+        payment_verified: false,
+        message: 'Payment could not be verified by Paystack'
       });
     }
 
     const paidNGN = psData.data.amount / 100;
-    console.log(`Payment verified ✓ — ₦${paidNGN}`);
+    console.log(`Payment Verified: ₦${paidNGN}`);
 
+    // Check if we have the necessary order data to proceed with dispatch
     if (!order_data?.pickup_address || !order_data?.delivery_address) {
       return res.status(200).json({
-        success: true, payment_verified: true,
-        dispatch_status: 'failed',
-        message: 'Payment verified but order addresses missing'
+        success: true, 
+        payment_verified: true,
+        dispatch_status: 'pending',
+        message: 'Payment verified, but order addresses are missing for automated dispatch.'
       });
     }
 
     if (!SHIPBUBBLE_KEY) {
-      return res.status(200).json({
-        success: true, payment_verified: true, paid_amount_ngn: paidNGN,
-        dispatch_status: 'failed',
-        message: 'Payment verified but Shipbubble API key not configured'
-      });
+      throw new Error('Shipbubble API key is not configured in environment variables.');
     }
 
-    // ── Step 2: Validate addresses ────────────────────────
-    console.log('Validating addresses...');
+    // ── Step 2: Validate addresses to get Codes ──────────
+    console.log('Validating Pickup and Delivery addresses...');
     const [senderCode, receiverCode] = await Promise.all([
       validateAddress(
         order_data.pickup_address,
-        order_data.sender_name  || 'Sender',
+        order_data.sender_name || 'SwiftFifteen Customer',
         order_data.sender_phone,
-        order_data.sender_email || 'orders@swiftfifteenexpress.com',
+        order_data.sender_email,
         SHIPBUBBLE_KEY
       ),
       validateAddress(
         order_data.delivery_address,
-        order_data.recipient_name  || 'Recipient',
+        order_data.recipient_name || 'Recipient',
         order_data.recipient_phone || order_data.sender_phone,
-        order_data.sender_email    || 'recipient@example.com',
+        null, // Email optional for recipient
         SHIPBUBBLE_KEY
       )
     ]);
 
-    console.log('Sender code:', senderCode, '— Receiver code:', receiverCode);
-
-    // ── Step 3: Fetch rates ───────────────────────────────
-    const weight       = weightToKg(order_data.package_weight);
-    const declaredValue = parseFloat(order_data.declared_value) || 1000;
-    const pickupDate   = order_data.pickup_date || new Date().toISOString().split('T')[0];
+    // ── Step 3: Fetch Shipping Rates ──────────────────────
+    const weight = weightToKg(order_data.package_weight);
+    const pickupDate = order_data.pickup_date || new Date().toISOString().split('T')[0];
 
     const ratesPayload = {
-      pickup_date:    pickupDate,
-      category_id:    1,
+      pickup_date: pickupDate,
+      category_id: 1, // Defaulting to General Category
       package_items: [{
-        name:         order_data.package_description || 'Package',
-        description:  order_data.package_description || 'Delivery',
-        unit_weight:  weight,
-        unit_amount:  declaredValue,
-        quantity:     1
+        name: order_data.package_description || 'Logistics Package',
+        description: order_data.package_description || 'Standard Delivery',
+        unit_weight: weight.toString(),
+        unit_amount: (parseFloat(order_data.declared_value) || 1000).toString(),
+        quantity: "1"
       }],
       package_dimension: { length: 10, width: 10, height: 10 },
-      sender_address_code:   senderCode,
-      receiver_address_code: receiverCode
+      sender_address_code: senderCode,
+      reciever_address_code: receiverCode // Note: Documentation uses this specific spelling
     };
 
-    console.log('Fetching rates:', JSON.stringify(ratesPayload));
-
+    console.log('Fetching available courier rates...');
     const ratesRes = await fetch('https://api.shipbubble.com/v1/shipping/fetch_rates', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SHIPBUBBLE_KEY}`,
-        'Content-Type':  'application/json',
-        'Accept':        'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
       },
       body: JSON.stringify(ratesPayload)
     });
 
-    const ratesRaw  = await ratesRes.text();
-    const ratesData = JSON.parse(ratesRaw);
-    console.log('Rates status:', ratesRes.status);
-    console.log('Couriers found:', ratesData.data?.couriers?.length || 0);
+    const ratesData = await ratesRes.json();
 
     if (ratesData.status !== 'success' || !ratesData.data?.couriers?.length) {
       return res.status(200).json({
-        success: true, payment_verified: true, paid_amount_ngn: paidNGN,
-        dispatch_status: 'failed',
-        message: 'Payment verified ✓ but no couriers available — dispatch manually'
+        success: true, 
+        payment_verified: true,
+        dispatch_status: 'manual_required',
+        message: 'Payment verified, but no automated courier rates were found for this route.'
       });
     }
 
-    const requestToken    = ratesData.data.request_token;
-    const selectedCourier = ratesData.data.cheapest_courier;
-    console.log('Selected:', selectedCourier?.courier_name, '₦' + selectedCourier?.total);
+    // Auto-select the cheapest courier as per Shipbubble's recommendation
+    const requestToken = ratesData.data.request_token;
+    const selectedCourier = ratesData.data.cheapest_courier || ratesData.data.couriers[0];
 
-    // ── Step 4: Create shipment (dispatch rider) ──────────
+    // ── Step 4: Create Shipment (Dispatch Rider) ──────────
+    console.log(`Dispatching via ${selectedCourier.courier_name}...`);
     const shipPayload = {
       request_token: requestToken,
-      courier_id:    selectedCourier.courier_id,
-      service_code:  selectedCourier.service_code,
-      is_cod_label:  false
+      courier_id: selectedCourier.courier_id,
+      service_code: selectedCourier.service_code,
+      is_cod_label: false
     };
 
-    console.log('Creating shipment:', JSON.stringify(shipPayload));
-
-    const shipRes  = await fetch('https://api.shipbubble.com/v1/shipping/labels', {
+    const shipRes = await fetch('https://api.shipbubble.com/v1/shipping/labels', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SHIPBUBBLE_KEY}`,
-        'Content-Type':  'application/json',
-        'Accept':        'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
       },
       body: JSON.stringify(shipPayload)
     });
 
-    const shipRaw  = await shipRes.text();
-    const shipData = JSON.parse(shipRaw);
-    console.log('Shipment HTTP status:', shipRes.status);
-    console.log('Shipment response:', shipRaw);
+    const shipData = await shipRes.json();
 
     if (shipData.status !== 'success') {
       return res.status(200).json({
-        success: true, payment_verified: true, paid_amount_ngn: paidNGN,
-        dispatch_status: 'failed', dispatch_error: shipData,
-        message: 'Payment verified ✓ but dispatch failed — dispatch manually'
+        success: true, 
+        payment_verified: true,
+        dispatch_status: 'failed',
+        message: `Dispatch failed: ${shipData.message}. Please dispatch manually from the dashboard.`
       });
     }
 
-    const orderId     = shipData.data?.order_id    || null;
-    const trackingUrl = shipData.data?.tracking_url || null;
-    const courierName = shipData.data?.courier?.name || selectedCourier?.courier_name;
-
-    console.log('Dispatch success! Order:', orderId, 'Tracking:', trackingUrl);
-
+    // ── Success: Return all tracking info to frontend ────
     return res.status(200).json({
-      success:          true,
+      success: true,
       payment_verified: true,
-      paid_amount_ngn:  paidNGN,
-      dispatch_status:  'success',
-      order_id:         orderId,
-      tracking_url:     trackingUrl,
-      courier_name:     courierName,
-      pickup_eta:       selectedCourier?.pickup_eta || null,
-      message:          'Payment verified and rider dispatched successfully'
+      dispatch_status: 'success',
+      order_id: shipData.data.order_id,
+      tracking_url: shipData.data.tracking_url,
+      courier_name: shipData.data.courier.name,
+      pickup_eta: selectedCourier.pickup_eta,
+      message: 'Payment verified and rider dispatched successfully!'
     });
 
   } catch (err) {
-    console.error('verify-payment error:', err.message);
-    return res.status(200).json({
-      success: false, payment_verified: false,
-      dispatch_status: 'error', error: err.message,
-      message: 'Server error — check Vercel logs'
+    console.error('Critical Error in verify-payment:', err.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal Server Error',
+      details: err.message
     });
   }
-}
+      }
+    
