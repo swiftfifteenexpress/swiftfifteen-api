@@ -1,20 +1,8 @@
 // ============================================================
-// Swift-Fifteen Express — Kwikpik Price Estimate Function
+// Swift-Fifteen Express — Shipbubble Price Estimate Function
 // Route: POST /api/estimate
+// No geocoding needed — Shipbubble handles addresses directly
 // ============================================================
-
-async function geocode(address) {
-  const query = encodeURIComponent(address + ', Nigeria');
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GOOGLE_MAPS_API_KEY}&region=ng&components=country:NG`;
-  const res  = await fetch(url);
-  const data = await res.json();
-  console.log(`Geocode "${address}" → ${data.status}`);
-  if (data.status !== 'OK' || !data.results?.length) {
-    throw new Error(`Geocoding failed: "${address}" — ${data.status}`);
-  }
-  const loc = data.results[0].geometry.location;
-  return { latitude: loc.lat, longitude: loc.lng, address: address };
-}
 
 export default async function handler(req, res) {
 
@@ -25,7 +13,8 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
 
-  const { pickup_address, delivery_address } = req.body;
+  const { pickup_address, delivery_address, package_weight } = req.body;
+
   console.log('=== estimate called ===');
   console.log('Pickup:', pickup_address);
   console.log('Delivery:', delivery_address);
@@ -36,103 +25,107 @@ export default async function handler(req, res) {
 
   const MINIMUM_CHARGE = 2000;
 
-  if (!process.env.KWIKPIK_API_KEY) {
-    console.error('KWIKPIK_API_KEY missing');
-    return res.status(200).json({ success: true, kwikpik_price: null, your_price: MINIMUM_CHARGE, fallback: true, message: 'API key not configured' });
-  }
-  if (!process.env.GOOGLE_MAPS_API_KEY) {
-    console.error('GOOGLE_MAPS_API_KEY missing');
-    return res.status(200).json({ success: true, kwikpik_price: null, your_price: MINIMUM_CHARGE, fallback: true, message: 'Maps key not configured' });
+  if (!process.env.SHIPBUBBLE_API_KEY) {
+    console.error('SHIPBUBBLE_API_KEY missing');
+    return res.status(200).json({
+      success: true, kwikpik_price: null,
+      your_price: MINIMUM_CHARGE, fallback: true,
+      message: 'Shipbubble API key not configured'
+    });
   }
 
   try {
-    // Step 1 — Geocode both addresses
-    const [pickupCoords, deliveryCoords] = await Promise.all([
-      geocode(pickup_address),
-      geocode(delivery_address)
-    ]);
-    console.log('Pickup coords:', JSON.stringify(pickupCoords));
-    console.log('Delivery coords:', JSON.stringify(deliveryCoords));
+    const payload = {
+      pickup_date: new Date().toISOString().split('T')[0],
+      category_id: 1,
+      package_items: [{
+        name: 'Package',
+        description: 'Delivery package',
+        unit_weight: parseFloat(package_weight) || 1,
+        unit_amount: 1000,
+        quantity: 1
+      }],
+      package_dimension: { length: 10, width: 10, height: 10 },
+      sender_address: {
+        name: 'Swift-Fifteen Express',
+        email: 'orders@swiftfifteenexpress.com',
+        phone: '+2348029234994',
+        address: pickup_address
+      },
+      receiver_address: {
+        name: 'Recipient',
+        email: 'recipient@example.com',
+        phone: '+2348000000000',
+        address: delivery_address
+      }
+    };
 
-    // Step 2 — Call Kwikpik estimate
-    const kwikpikRes = await fetch('https://api.kwikpik.io/partners/requests/estimate', {
+    console.log('Calling Shipbubble fetch_rates...');
+
+    const shipRes = await fetch('https://api.shipbubble.com/v1/shipping/fetch_rates', {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${process.env.SHIPBUBBLE_API_KEY}`,
         'Content-Type': 'application/json',
-        'x-api-key': process.env.KWIKPIK_API_KEY,
-        'Accept': 'application/json',
+        'Accept': 'application/json'
       },
-      body: JSON.stringify({
-        insured: false,
-        itemValue: 0,
-        vehicleType: 'motorcycle',
-        pickupLocation: {
-          latitude:  pickupCoords.latitude,
-          longitude: pickupCoords.longitude,
-          address:   pickup_address
-        },
-        deliveryLocation: {
-          latitude:  deliveryCoords.latitude,
-          longitude: deliveryCoords.longitude,
-          address:   delivery_address
-        }
-      })
+      body: JSON.stringify(payload)
     });
 
-    const rawText = await kwikpikRes.text();
-    console.log('Kwikpik estimate HTTP status:', kwikpikRes.status);
-    console.log('Kwikpik estimate raw response:', rawText);
+    const rawText = await shipRes.text();
+    console.log('Shipbubble HTTP status:', shipRes.status);
+    console.log('Shipbubble response:', rawText);
 
-    // Handle empty response
     if (!rawText || rawText.trim() === '') {
-      console.error('Kwikpik returned empty body on estimate');
+      console.error('Shipbubble returned empty body');
       return res.status(200).json({
-        success: true, kwikpik_price: null,
-        your_price: MINIMUM_CHARGE, fallback: true,
-        message: 'Kwikpik returned empty response'
+        success: true, your_price: MINIMUM_CHARGE,
+        fallback: true, message: 'Empty response from Shipbubble'
       });
     }
 
     let data;
     try { data = JSON.parse(rawText); }
     catch(e) {
-      console.error('Non-JSON from Kwikpik:', rawText.substring(0, 200));
+      console.error('Non-JSON from Shipbubble:', rawText.substring(0, 300));
       return res.status(200).json({
-        success: true, kwikpik_price: null,
-        your_price: MINIMUM_CHARGE, fallback: true,
-        message: 'Non-JSON response from Kwikpik'
+        success: true, your_price: MINIMUM_CHARGE,
+        fallback: true, message: 'Non-JSON response from Shipbubble'
       });
     }
 
-    // Step 3 — Extract price
-    const basePrice = data?.result?.total
-      || data?.result?.deliveryFee
-      || data?.total
-      || data?.deliveryFee
-      || null;
+    if (data.status !== 'success' || !data.data?.couriers?.length) {
+      console.error('No couriers found:', JSON.stringify(data));
+      return res.status(200).json({
+        success: true, your_price: MINIMUM_CHARGE,
+        fallback: true, message: 'No couriers available for this route',
+        debug: data
+      });
+    }
 
-    console.log('Extracted base price:', basePrice);
-    console.log('Full Kwikpik response:', JSON.stringify(data));
+    // Use cheapest courier as the base price
+    const cheapest = data.data.cheapest_courier;
+    const basePrice = parseFloat(cheapest?.total || cheapest?.price || 0);
+
+    console.log('Cheapest courier:', cheapest?.courier_name, '— ₦' + basePrice);
+    console.log('All couriers:', data.data.couriers.map(c => `${c.courier_name}: ₦${c.total}`).join(', '));
 
     if (!basePrice) {
       return res.status(200).json({
-        success: true, kwikpik_price: null,
-        your_price: MINIMUM_CHARGE, fallback: true,
-        full_response: data,
-        message: 'Price field not found in Kwikpik response'
+        success: true, your_price: MINIMUM_CHARGE,
+        fallback: true, message: 'Could not extract price from Shipbubble response',
+        debug: data.data
       });
     }
 
-    // Step 4 — Return raw Kwikpik price only
-    // The 25% margin is applied in the browser (order.html fetchEstimate function)
-    const baseNum = parseFloat(basePrice);
-    console.log(`Returning kwikpik_price: ₦${baseNum}`);
-
+    // Return raw Shipbubble price — 25% margin applied in browser
     return res.status(200).json({
-      success:       true,
-      kwikpik_price: baseNum,
-      your_price:    baseNum, // browser applies 25% margin on top of this
-      duration:      data?.result?.duration || null,
+      success:        true,
+      kwikpik_price:  basePrice,   // keeping same field name for browser compatibility
+      your_price:     basePrice,   // browser applies 25% margin
+      courier_name:   cheapest?.courier_name || 'Available courier',
+      pickup_eta:     cheapest?.pickup_eta || null,
+      request_token:  data.data.request_token || null,
       fallback:       false,
       currency:       'NGN'
     });
@@ -140,9 +133,9 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('Estimate error:', err.message);
     return res.status(200).json({
-      success: true, kwikpik_price: null,
-      your_price: MINIMUM_CHARGE, fallback: true,
-      error: err.message
+      success: true, your_price: MINIMUM_CHARGE,
+      fallback: true, error: err.message,
+      message: 'Fallback price used'
     });
   }
-    }
+      }
