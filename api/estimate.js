@@ -1,8 +1,39 @@
 // ============================================================
 // Swift-Fifteen Express — Shipbubble Price Estimate Function
 // Route: POST /api/estimate
-// No geocoding needed — Shipbubble handles addresses directly
+// Flow: validate addresses → get address codes → fetch rates
 // ============================================================
+
+async function validateAddress(address, name, phone, email, apiKey) {
+  const payload = {
+    name:    name,
+    email:   email,
+    phone:   phone,
+    address: address + ', Lagos, Nigeria'
+  };
+
+  console.log(`Validating address: "${address}"`);
+
+  const res = await fetch('https://api.shipbubble.com/v1/shipping/address/validate', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type':  'application/json',
+      'Accept':        'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const raw = await res.text();
+  console.log(`Address validate status: ${res.status}`);
+  console.log(`Address validate response: ${raw}`);
+
+  const data = JSON.parse(raw);
+  if (data.status !== 'success' || !data.data?.address_code) {
+    throw new Error(`Address validation failed for "${address}": ${data.message || 'unknown error'}`);
+  }
+  return data.data.address_code;
+}
 
 export default async function handler(req, res) {
 
@@ -24,9 +55,9 @@ export default async function handler(req, res) {
   }
 
   const MINIMUM_CHARGE = 2000;
+  const API_KEY = process.env.SHIPBUBBLE_API_KEY;
 
-  if (!process.env.SHIPBUBBLE_API_KEY) {
-    console.error('SHIPBUBBLE_API_KEY missing');
+  if (!API_KEY) {
     return res.status(200).json({
       success: true, kwikpik_price: null,
       your_price: MINIMUM_CHARGE, fallback: true,
@@ -35,107 +66,102 @@ export default async function handler(req, res) {
   }
 
   try {
-    const payload = {
-      pickup_date: new Date().toISOString().split('T')[0],
-      category_id: 1,
+    // Step 1 — Validate both addresses to get address codes
+    const [senderCode, receiverCode] = await Promise.all([
+      validateAddress(
+        pickup_address,
+        'Swift-Fifteen Express',
+        '+2348029234994',
+        'orders@swiftfifteenexpress.com',
+        API_KEY
+      ),
+      validateAddress(
+        delivery_address,
+        'Recipient',
+        '+2348000000000',
+        'recipient@example.com',
+        API_KEY
+      )
+    ]);
+
+    console.log('Sender code:', senderCode);
+    console.log('Receiver code:', receiverCode);
+
+    // Step 2 — Fetch rates using address codes
+    const weight = parseFloat(package_weight) || 1;
+    const ratesPayload = {
+      pickup_date:    new Date().toISOString().split('T')[0],
+      category_id:    1,
       package_items: [{
-        name: 'Package',
-        description: 'Delivery package',
-        unit_weight: parseFloat(package_weight) || 1,
-        unit_amount: 1000,
-        quantity: 1
+        name:         'Package',
+        description:  'Delivery package',
+        unit_weight:  weight,
+        unit_amount:  1000,
+        quantity:     1
       }],
       package_dimension: { length: 10, width: 10, height: 10 },
-      sender_address: {
-        name: 'Swift-Fifteen Express',
-        email: 'orders@swiftfifteenexpress.com',
-        phone: '+2348029234994',
-        address: pickup_address
-      },
-      receiver_address: {
-        name: 'Recipient',
-        email: 'recipient@example.com',
-        phone: '+2348000000000',
-        address: delivery_address
-      }
+      sender_address_code:   senderCode,
+      receiver_address_code: receiverCode
     };
 
-    console.log('Calling Shipbubble fetch_rates...');
+    console.log('Fetching rates with payload:', JSON.stringify(ratesPayload));
 
-    const shipRes = await fetch('https://api.shipbubble.com/v1/shipping/fetch_rates', {
+    const ratesRes = await fetch('https://api.shipbubble.com/v1/shipping/fetch_rates', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.SHIPBUBBLE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type':  'application/json',
+        'Accept':        'application/json'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(ratesPayload)
     });
 
-    const rawText = await shipRes.text();
-    console.log('Shipbubble HTTP status:', shipRes.status);
-    console.log('Shipbubble response:', rawText);
+    const ratesRaw = await ratesRes.text();
+    console.log('Rates HTTP status:', ratesRes.status);
+    console.log('Rates response:', ratesRaw);
 
-    if (!rawText || rawText.trim() === '') {
-      console.error('Shipbubble returned empty body');
-      return res.status(200).json({
-        success: true, your_price: MINIMUM_CHARGE,
-        fallback: true, message: 'Empty response from Shipbubble'
-      });
-    }
+    const ratesData = JSON.parse(ratesRaw);
 
-    let data;
-    try { data = JSON.parse(rawText); }
-    catch(e) {
-      console.error('Non-JSON from Shipbubble:', rawText.substring(0, 300));
-      return res.status(200).json({
-        success: true, your_price: MINIMUM_CHARGE,
-        fallback: true, message: 'Non-JSON response from Shipbubble'
-      });
-    }
-
-    if (data.status !== 'success' || !data.data?.couriers?.length) {
-      console.error('No couriers found:', JSON.stringify(data));
+    if (ratesData.status !== 'success' || !ratesData.data?.couriers?.length) {
+      console.error('No couriers:', JSON.stringify(ratesData));
       return res.status(200).json({
         success: true, your_price: MINIMUM_CHARGE,
         fallback: true, message: 'No couriers available for this route',
-        debug: data
+        debug: ratesData
       });
     }
 
-    // Use cheapest courier as the base price
-    const cheapest = data.data.cheapest_courier;
-    const basePrice = parseFloat(cheapest?.total || cheapest?.price || 0);
+    const cheapest  = ratesData.data.cheapest_courier;
+    const basePrice = parseFloat(cheapest?.total || 0);
 
-    console.log('Cheapest courier:', cheapest?.courier_name, '— ₦' + basePrice);
-    console.log('All couriers:', data.data.couriers.map(c => `${c.courier_name}: ₦${c.total}`).join(', '));
+    console.log('Cheapest courier:', cheapest?.courier_name, '₦' + basePrice);
 
     if (!basePrice) {
       return res.status(200).json({
         success: true, your_price: MINIMUM_CHARGE,
-        fallback: true, message: 'Could not extract price from Shipbubble response',
-        debug: data.data
+        fallback: true, message: 'Could not extract price'
       });
     }
 
-    // Return raw Shipbubble price — 25% margin applied in browser
     return res.status(200).json({
-      success:        true,
-      kwikpik_price:  basePrice,   // keeping same field name for browser compatibility
-      your_price:     basePrice,   // browser applies 25% margin
-      courier_name:   cheapest?.courier_name || 'Available courier',
-      pickup_eta:     cheapest?.pickup_eta || null,
-      request_token:  data.data.request_token || null,
-      fallback:       false,
-      currency:       'NGN'
+      success:              true,
+      kwikpik_price:        basePrice,
+      your_price:           basePrice,
+      courier_name:         cheapest?.courier_name || '',
+      pickup_eta:           cheapest?.pickup_eta   || '',
+      delivery_eta:         cheapest?.delivery_eta || '',
+      sender_address_code:  senderCode,
+      receiver_address_code: receiverCode,
+      request_token:        ratesData.data.request_token,
+      fallback:             false,
+      currency:             'NGN'
     });
 
   } catch (err) {
     console.error('Estimate error:', err.message);
     return res.status(200).json({
       success: true, your_price: MINIMUM_CHARGE,
-      fallback: true, error: err.message,
-      message: 'Fallback price used'
+      fallback: true, error: err.message
     });
   }
       }
