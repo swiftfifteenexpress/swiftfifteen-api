@@ -166,7 +166,7 @@ export default async function handler(req, res) {
       sender_address_code:   senderCode,
       reciever_address_code: receiverCode,   // Shipbubble typo — must match exactly
       pickup_date:           today,
-      category_id:           98246239,       // Fashion wears (most common)
+      category_id:           74794423,       // Fashion wears (confirmed from account)
       package_items: [{
         name:        order_data.package_description || 'Package',
         description: order_data.package_description || 'Delivery package',
@@ -281,4 +281,4 @@ export default async function handler(req, res) {
       message: 'Server error — check Vercel logs'
     });
   }
-                       }
+}
