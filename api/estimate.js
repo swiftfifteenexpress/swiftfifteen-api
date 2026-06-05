@@ -128,7 +128,7 @@ export default async function handler(req, res) {
       sender_address_code:   senderCode,
       reciever_address_code: receiverCode,    // ← Shipbubble typo — must match exactly
       pickup_date:           today,
-      category_id:           98246239,        // "Fashion wears" — most common for our orders
+      category_id:           74794423,        // "Fashion wears" — most common for our orders
       package_items: [{
         name:        'Package',
         description: 'Delivery package',
@@ -196,4 +196,4 @@ export default async function handler(req, res) {
       fallback: true, error: err.message
     });
   }
-}
+                                         }
