@@ -1,4 +1,3 @@
-
 // ============================================================
 // Swift-Fifteen Express — Shipbubble Price Estimate
 // Route: POST /api/estimate
@@ -76,7 +75,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Both addresses are required' });
   }
 
-  const MINIMUM   = 2000;
+  const MINIMUM   = 5000;
   const SB_KEY    = process.env.SHIPBUBBLE_API_KEY;
   const GM_KEY    = process.env.GOOGLE_MAPS_API_KEY;
 
