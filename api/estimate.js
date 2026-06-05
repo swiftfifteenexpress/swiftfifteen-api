@@ -196,4 +196,4 @@ export default async function handler(req, res) {
       fallback: true, error: err.message
     });
   }
-    }
+}
