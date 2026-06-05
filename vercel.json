@@ -2,12 +2,14 @@
   "version": 2,
   "functions": {
     "api/estimate.js": {
-      "memory": 128,
-      "maxDuration": 10
+      "maxDuration": 30
     },
-    "api/dispatch.js": {
-      "memory": 128,
-      "maxDuration": 15
+    "api/verify-payment.js": {
+      "maxDuration": 30
     }
   }
 }
+
+
+
+
