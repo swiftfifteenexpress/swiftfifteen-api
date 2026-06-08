@@ -6,6 +6,9 @@
     },
     "api/verify-payment.js": {
       "maxDuration": 30
+    },
+    "api/partner-order.js": {
+      "maxDuration": 30
     }
   }
 }
