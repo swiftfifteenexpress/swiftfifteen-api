@@ -49,10 +49,13 @@ export default async function handler(req, res) {
     sender_phone,
     sender_email,
     pickup_address,
+    pickup_state,
     pickup_city,
     recipient_name,
     recipient_phone,
     delivery_address,
+    delivery_state,
+    delivery_city,
     package_description,
     package_weight,
     declared_value,
@@ -71,11 +74,14 @@ export default async function handler(req, res) {
 
   try {
     // Step 1 — Geocode both addresses
+    // Qualify with city/state so geocoding doesn't guess wrong when the same
+    // street name exists in multiple states (pickup is no longer Lagos-only)
     console.log('Geocoding addresses for dispatch...');
-    const pickupFull   = pickup_address + (pickup_city ? ', ' + pickup_city : ', Lagos');
+    const pickupFull   = [pickup_address, pickup_city, pickup_state].filter(Boolean).join(', ');
+    const deliveryFull = [delivery_address, delivery_city, delivery_state].filter(Boolean).join(', ');
     const [pickupCoords, deliveryCoords] = await Promise.all([
       geocode(pickupFull),
-      geocode(delivery_address)
+      geocode(deliveryFull)
     ]);
 
     // Step 2 — Build exact Kwikpik initiate payload from API docs
