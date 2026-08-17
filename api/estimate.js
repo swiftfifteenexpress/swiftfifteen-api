@@ -65,15 +65,23 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
 
-  const { pickup_address, delivery_address, package_weight } = req.body;
+  const {
+    pickup_address, delivery_address, package_weight,
+    pickup_state, delivery_state, pickup_city, delivery_city
+  } = req.body;
 
   console.log('=== estimate called ===');
-  console.log('Pickup:', pickup_address);
-  console.log('Delivery:', delivery_address);
+  console.log('Pickup:', pickup_address, '|', pickup_city, pickup_state);
+  console.log('Delivery:', delivery_address, '|', delivery_city, delivery_state);
 
   if (!pickup_address || !delivery_address) {
     return res.status(400).json({ error: 'Both addresses are required' });
   }
+
+  // Qualify with city/state so geocoding doesn't guess wrong when the same
+  // street name exists in multiple states (now that pickup isn't Lagos-only)
+  const pickupFullAddress   = [pickup_address, pickup_city, pickup_state].filter(Boolean).join(', ');
+  const deliveryFullAddress = [delivery_address, delivery_city, delivery_state].filter(Boolean).join(', ');
 
   const MINIMUM   = 2000;
   const SB_KEY    = process.env.SHIPBUBBLE_API_KEY;
@@ -90,8 +98,8 @@ export default async function handler(req, res) {
   try {
     // Step 1 — Geocode both addresses
     const [pickupCoords, deliveryCoords] = await Promise.all([
-      geocode(pickup_address),
-      geocode(delivery_address)
+      geocode(pickupFullAddress),
+      geocode(deliveryFullAddress)
     ]);
     console.log('Pickup coords:', pickupCoords);
     console.log('Delivery coords:', deliveryCoords);
@@ -100,7 +108,7 @@ export default async function handler(req, res) {
     // Using lat/lng so Shipbubble uses coordinates, not address string
     const [senderCode, receiverCode] = await Promise.all([
       validateAddress(
-        pickup_address,
+        pickupFullAddress,
         'Swift Fifteen',      // clean name, 2 words, no hyphens/numbers
         '+2348029234994',
         'orders@swiftfifteenexpress.com',
@@ -108,7 +116,7 @@ export default async function handler(req, res) {
         pickupCoords
       ),
       validateAddress(
-        delivery_address,
+        deliveryFullAddress,
         'Delivery Recipient',  // generic clean name for estimate
         '+2348000000001',
         'recipient@swiftfifteenexpress.com',
